@@ -38,6 +38,9 @@ esp_err_t ft6x06_i2c_read8(uint8_t slave_addr, uint8_t register_addr, uint8_t *d
     return lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, slave_addr, register_addr, data_buf, 1);
 }
 
+esp_err_t ft6x06_i2c_write8(uint8_t slave_addr, uint8_t register_addr, uint8_t data_buf) {
+    return lvgl_i2c_write(CONFIG_LV_I2C_TOUCH_PORT, slave_addr, register_addr, &data_buf, 1);
+}
 
 /**
   * @brief  Read the FT6x36 gesture ID. Initialize first!
@@ -84,6 +87,10 @@ void ft6x06_init(uint16_t dev_addr) {
 
     ft6x06_i2c_read8(dev_addr, FT6X36_RELEASECODE_REG, &data_buf);
     ESP_LOGI(TAG, "\tRelease code: 0x%02x", data_buf);
+
+//    ft6x06_i2c_write8(dev_addr, FT6X36_TH_GROUP_REG, 0x26);
+    ft6x06_i2c_read8(dev_addr, FT6X36_TH_GROUP_REG, &data_buf);
+    ESP_LOGI(TAG, "\tThreshold Value: 0x%02x", data_buf);
 
 }
 
@@ -166,5 +173,100 @@ bool ft6x36_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
     //    data_buf[0], data_buf[1], data_buf[2], data_buf[3], data_buf[4]);
 
     ESP_LOGV(TAG, "X=%u Y=%u", data->point.x, data->point.y);
+    return false;
+}
+
+bool ft6x36_direct_read(int16_t* x1, int16_t* y1, int16_t* x2, int16_t* y2, uint8_t* count) {
+    if (!ft6x36_status.inited) {
+        ESP_LOGE(TAG, "Init first!");
+        return 0x00;
+    }
+    uint8_t data_buf[9];        // 1 byte status, 2 bytes X1, 2 bytes Y1, 2 bytes X2, 2 bytes Y2
+    static int16_t last_x1 = 0;  // 12bit pixel value
+    static int16_t last_y1 = 0;  // 12bit pixel value
+    static int16_t last_x2 = 0;  // 12bit pixel value
+    static int16_t last_y2 = 0;  // 12bit pixel value
+
+#if 0 // If muliti register read is enable, it get wrong data with m5core2 board. 
+    esp_err_t ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_TD_STAT_REG, &data_buf[0], 5);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+    uint8_t touch_pnt_cnt = data_buf[0];  // Number of detected touch points
+
+    if (ret != ESP_OK || touch_pnt_cnt != 1) {    // ignore no touch & multi touch
+        data->point.x = last_x;
+        data->point.y = last_y;
+        data->state = LV_INDEV_STATE_REL;
+        return false;
+    }
+#else
+    esp_err_t ret; 
+    
+    ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_TD_STAT_REG, &data_buf[0], 1);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+
+    uint8_t touch_pnt_cnt = data_buf[0];  // Number of detected touch points
+    if (ret != ESP_OK || touch_pnt_cnt == 0) {    // ignore no touch & multi touch
+        *x1 = last_x1;
+        *y1 = last_y1;
+        *x2 = last_x2;
+        *y2 = last_y2;
+        *count = 0;
+        return false;
+    }
+
+    ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_P1_XH_REG, &data_buf[1], 2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+    last_x1 = ((data_buf[1] & FT6X36_MSB_MASK) << 8) | (data_buf[2] & FT6X36_LSB_MASK);    
+
+    ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_P1_YH_REG, &data_buf[3], 2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+
+    last_y1 = ((data_buf[3] & FT6X36_MSB_MASK) << 8) | (data_buf[4] & FT6X36_LSB_MASK);
+
+    ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_P2_XH_REG, &data_buf[5], 2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+    last_x2 = ((data_buf[5] & FT6X36_MSB_MASK) << 8) | (data_buf[6] & FT6X36_LSB_MASK);    
+
+    ret = lvgl_i2c_read(CONFIG_LV_I2C_TOUCH_PORT, current_dev_addr, FT6X36_P2_YH_REG, &data_buf[7], 2);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Error talking to touch IC: %s", esp_err_to_name(ret));
+    }
+    last_y2 = ((data_buf[7] & FT6X36_MSB_MASK) << 8) | (data_buf[8] & FT6X36_LSB_MASK);
+
+
+#endif
+
+
+#if CONFIG_LV_FT6X36_SWAPXY
+    int16_t swap_buf = last_x;
+    last_x = last_y;
+    last_y = swap_buf;
+#endif
+#if CONFIG_LV_FT6X36_INVERT_X
+    last_x =  LV_HOR_RES - last_x;
+#endif
+#if CONFIG_LV_FT6X36_INVERT_Y
+    last_y = LV_VER_RES - last_y;
+#endif
+    *x1 = last_x1;
+    *y1 = last_y1;
+    *x2 = last_x2;
+    *y2 = last_y2;
+    *count = touch_pnt_cnt;
+
+    //ESP_LOGI(TAG, "data[] = %02x %02x %02x %02x %02x", 
+    //    data_buf[0], data_buf[1], data_buf[2], data_buf[3], data_buf[4]);
+
+    ESP_LOGV(TAG, "count=%d X1=%u Y1=%u X2=%u Y2=%u", *count, *x1, *y1, *x2, *y2);
     return false;
 }
